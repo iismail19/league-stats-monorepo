@@ -7,6 +7,13 @@ const Bottleneck = require("bottleneck");
 const helmet = require("helmet");
 require("dotenv").config();
 
+// Swagger setup (dev mode only)
+let swaggerUi, swaggerSpec;
+if (process.env.NODE_ENV === 'dev') {
+  swaggerUi = require('swagger-ui-express');
+  swaggerSpec = require('./swagger.config');
+}
+
 // Validate environment variables (allow running in dev without API_KEY)
 if (!process.env.API_KEY && process.env.NODE_ENV !== 'dev') {
   console.error("❌ API_KEY is missing from environment variables.");
@@ -158,6 +165,40 @@ const getMatchDataURL = (matchId) =>
 const getMatchTimelineURL = (matchId) =>
   `${BASE_URL}${MATCH_URL}${matchId}/timeline?${API_KEY}`;
 
+/**
+ * @swagger
+ * /summoner/puuid/{puuid}:
+ *   get:
+ *     summary: Get summoner information by PUUID
+ *     description: Fetches summoner details using their PUUID (Player Universally Unique Identifier)
+ *     tags: [Summoner]
+ *     parameters:
+ *       - in: path
+ *         name: puuid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Player's PUUID
+ *         example: "abc123def456"
+ *       - in: query
+ *         name: tagline
+ *         schema:
+ *           type: string
+ *           default: NA1
+ *         description: Region tagline to determine regional server (NA1, EUW1, KR, etc.)
+ *         example: "NA1"
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved summoner data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Summoner'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // GET /summoner/puuid/:puuid - fetch summoner by PUUID (cached)
 // Optional query param: ?tagline=NA1 (to determine regional server)
 app.get(
@@ -188,6 +229,48 @@ app.get(
   })
 );
 
+/**
+ * @swagger
+ * /summoner/{encryptedSummonerId}/league:
+ *   get:
+ *     summary: Get ranked league entries for a summoner
+ *     description: Fetches ranked league entries (rank, tier, LP) for a summoner. Supports both encryptedSummonerId and PUUID lookup.
+ *     tags: [Summoner]
+ *     parameters:
+ *       - in: path
+ *         name: encryptedSummonerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Encrypted summoner ID (can be 'placeholder' if using puuid query param)
+ *         example: "abc123def456"
+ *       - in: query
+ *         name: tagline
+ *         schema:
+ *           type: string
+ *           default: NA1
+ *         description: Region tagline to determine regional server
+ *         example: "NA1"
+ *       - in: query
+ *         name: puuid
+ *         schema:
+ *           type: string
+ *         description: Player PUUID (alternative lookup method if encryptedSummonerId is not available)
+ *         example: "abc123def456"
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved league entries (may be empty array if unranked)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/LeagueEntry'
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // GET /summoner/:encryptedSummonerId/league - ranked entries (cached 10m)
 // Optional query param: ?tagline=NA1 (to determine regional server)
 // Also supports ?puuid=... to use by-puuid endpoint as fallback
@@ -316,6 +399,42 @@ app.get(
   })
 );
 
+/**
+ * @swagger
+ * /champion-mastery/{puuid}:
+ *   get:
+ *     summary: Get champion mastery list by PUUID
+ *     description: Fetches all champion mastery data for a player, sorted by mastery points
+ *     tags: [Champion]
+ *     parameters:
+ *       - in: path
+ *         name: puuid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Player's PUUID
+ *         example: "abc123def456"
+ *       - in: query
+ *         name: tagline
+ *         schema:
+ *           type: string
+ *           default: NA1
+ *         description: Region tagline to determine regional server
+ *         example: "NA1"
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved champion mastery data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/ChampionMastery'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // GET /champion-mastery/:puuid - champion mastery list by PUUID (cached 1h)
 // Optional query param: ?tagline=NA1 (to determine regional server)
 app.get(
@@ -391,12 +510,31 @@ axios.interceptors.response.use(null, async (error) => {
 // CORS must be first to handle preflight requests
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
+    // In dev mode, allow all origins (for Swagger UI and development flexibility)
+    if (process.env.NODE_ENV === 'dev') {
+      return callback(null, true);
+    }
+    
+    // Allow requests with no origin (like mobile apps, curl, or same-origin requests)
     if (!origin) return callback(null, true);
     
-    // Allow localhost origins for development
-    const localhostOrigins = ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'];
+    // Allow specific localhost origins for development
+    const localhostOrigins = [
+      'http://localhost:5173', 
+      'http://localhost:3000', 
+      'http://localhost:5174',
+      `http://localhost:${PORT}` // Allow Swagger UI on same port
+    ];
     if (localhostOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Allow any localhost origin
+    if (origin.match(/^http:\/\/localhost(:\d+)?$/)) {
+      return callback(null, true);
+    }
+    // Also allow 127.0.0.1
+    if (origin.match(/^http:\/\/127\.0\.0\.1(:\d+)?$/)) {
       return callback(null, true);
     }
     
@@ -418,6 +556,15 @@ app.use(compression());
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 })); // Security headers
+
+// Swagger UI setup (dev mode only)
+if (process.env.NODE_ENV === 'dev' && swaggerUi && swaggerSpec) {
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customCss: '.swagger-ui .topbar { display: none }',
+    customSiteTitle: 'League Stats API Documentation'
+  }));
+  console.log('📚 Swagger UI available at http://localhost:' + PORT + '/api-docs');
+}
 
 // Development mock: if running in dev without an API key, provide a simple mock response
 if (process.env.NODE_ENV === 'dev' && !process.env.API_KEY) {
@@ -478,43 +625,135 @@ function validateBody(requiredFields) {
   };
 }
 
+/**
+ * @swagger
+ * /:
+ *   post:
+ *     summary: Get user PUUID and match history with pagination
+ *     description: Fetches player PUUID by Riot ID (gameName#tagline) and returns match history with pagination support
+ *     tags: [Player]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - gameName
+ *               - tagline
+ *             properties:
+ *               gameName:
+ *                 type: string
+ *                 example: "Faker"
+ *                 description: Player's in-game name
+ *               tagline:
+ *                 type: string
+ *                 example: "KR1"
+ *                 description: Player's region tagline (e.g., NA1, EUW1, KR)
+ *               start:
+ *                 type: number
+ *                 default: 0
+ *                 minimum: 0
+ *                 description: Starting index for pagination
+ *               count:
+ *                 type: number
+ *                 default: 20
+ *                 minimum: 1
+ *                 maximum: 100
+ *                 description: Number of matches to fetch
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved player data and matches
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 puuid:
+ *                   type: string
+ *                   description: Player's unique identifier
+ *                 matchDataList:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Match'
+ *                 failedMatches:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Match IDs that failed to load
+ *                 summonerId:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Encrypted summoner ID if available
+ *                 hasMore:
+ *                   type: boolean
+ *                   description: Whether more matches are available
+ *                 nextStartIndex:
+ *                   type: number
+ *                   description: Next start index for pagination
+ *                 totalLoaded:
+ *                   type: number
+ *                   description: Total matches loaded in this request
+ *                 retryAfter:
+ *                   type: number
+ *                   nullable: true
+ *                   description: Seconds to wait if rate limited
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // POST / : Get user PUUID and matches with pagination support
 app.post(
   "/",
   validateBody(["gameName", "tagline"]),
   asyncHandler(async (req, res) => {
-    const { gameName, tagline, start = 0, count = 20 } = req.body;
+    try {
+      const { gameName, tagline, start = 0, count = 20 } = req.body;
 
-    // Validate pagination parameters
-    const startIndex = Math.max(0, parseInt(start, 10) || 0);
-    const matchCount = Math.min(Math.max(1, parseInt(count, 10) || 20), 100); // Max 100 matches per request
+      // Validate pagination parameters
+      const startIndex = Math.max(0, parseInt(start, 10) || 0);
+      const matchCount = Math.min(Math.max(1, parseInt(count, 10) || 20), 100); // Max 100 matches per request
 
-    const cacheKey = `puuid-${gameName}-${tagline}`;
-    let puuidData = cache.get(cacheKey);
+      const cacheKey = `puuid-${gameName}-${tagline}`;
+      let puuidData = cache.get(cacheKey);
 
-    // Only clear retried matches cache on initial request (start = 0)
-    if (startIndex === 0) {
-      retriedMatchesCache.clear();
-    }
-
-    // Track this request for rate limiting
-    trackRequest();
-
-    if (!puuidData) {
-      const url = getByRiotIdURL({ gameName, tagline });
-      try {
-        const response = await limitedRequest(() =>
-          axios.get(url, { retry: 3, retryDelay: 1000 })
-        );
-        puuidData = response.data;
-        cache.set(cacheKey, puuidData);
-      } catch (err) {
-        console.error("Failed to fetch PUUID:", err.message);
-        return res
-          .status(404)
-          .json({ error: "Summoner not found.", code: "NOT_FOUND" });
+      // Only clear retried matches cache on initial request (start = 0)
+      if (startIndex === 0) {
+        retriedMatchesCache.clear();
       }
-    }
+
+      // Track this request for rate limiting
+      trackRequest();
+
+      if (!puuidData) {
+        // Check if API_KEY is available
+        if (!process.env.API_KEY && process.env.NODE_ENV !== 'dev') {
+          return res.status(500).json({ 
+            error: "API key not configured", 
+            code: "CONFIG_ERROR" 
+          });
+        }
+
+        const url = getByRiotIdURL({ gameName, tagline });
+        try {
+          const response = await limitedRequest(() =>
+            axios.get(url, { retry: 3, retryDelay: 1000 })
+          );
+          puuidData = response.data;
+          cache.set(cacheKey, puuidData);
+        } catch (err) {
+          console.error("Failed to fetch PUUID:", err.message);
+          if (err.response) {
+            console.error("Riot API response:", err.response.status, err.response.data);
+          }
+          return res
+            .status(404)
+            .json({ error: "Summoner not found.", code: "NOT_FOUND" });
+        }
+      }
 
     // For paginated requests, don't use cache (each page is unique)
     // Only cache initial request (start = 0) for backwards compatibility
@@ -640,20 +879,60 @@ app.post(
     // Get rate limit info for response
     const retryAfter = getRetryAfter();
 
-    res.json({
-      puuid: puuidData.puuid,
-      matchDataList: successfulMatches,
-      failedMatches,
-      summonerId: summonerData?.id, // Include if we found it
-      // Pagination metadata
-      hasMore: listOfMatches.length === matchCount, // If we got full count, likely more exist
-      nextStartIndex: startIndex + listOfMatches.length,
-      totalLoaded: startIndex + listOfMatches.length,
-      retryAfter: retryAfter, // null or seconds to wait
-    });
+      res.json({
+        puuid: puuidData.puuid,
+        matchDataList: successfulMatches,
+        failedMatches,
+        summonerId: summonerData?.id, // Include if we found it
+        // Pagination metadata
+        hasMore: listOfMatches.length === matchCount, // If we got full count, likely more exist
+        nextStartIndex: startIndex + listOfMatches.length,
+        totalLoaded: startIndex + listOfMatches.length,
+        retryAfter: retryAfter, // null or seconds to wait
+      });
+    } catch (err) {
+      console.error("Error in POST / endpoint:", err.message);
+      console.error("Error stack:", err.stack);
+      throw err; // Re-throw to be caught by asyncHandler
+    }
   })
 );
 
+/**
+ * @swagger
+ * /matches:
+ *   post:
+ *     summary: Get match list by PUUID
+ *     description: Fetches a list of match IDs for a player
+ *     tags: [Matches]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - puuid
+ *             properties:
+ *               puuid:
+ *                 type: string
+ *                 description: Player's PUUID
+ *                 example: "abc123def456"
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved match list
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["NA1_1234567890", "NA1_0987654321"]
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // POST /matches : Get match list by PUUID
 app.post(
   "/matches",
@@ -673,6 +952,33 @@ app.post(
   })
 );
 
+/**
+ * @swagger
+ * /matches/{matchId}:
+ *   get:
+ *     summary: Get match data by match ID
+ *     description: Fetches detailed match information including participants, teams, and game stats
+ *     tags: [Matches]
+ *     parameters:
+ *       - in: path
+ *         name: matchId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Match ID (e.g., NA1_1234567890)
+ *         example: "NA1_1234567890"
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved match data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Match'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // GET /matches/:matchId - fetch a single match (cached)
 app.get(
   "/matches/:matchId",
@@ -702,6 +1008,42 @@ app.get(
   })
 );
 
+/**
+ * @swagger
+ * /matches/{matchId}/timeline:
+ *   get:
+ *     summary: Get match timeline by match ID
+ *     description: Fetches detailed timeline data for a match including events, frames, and participant frames
+ *     tags: [Matches]
+ *     parameters:
+ *       - in: path
+ *         name: matchId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Match ID (e.g., NA1_1234567890)
+ *         example: "NA1_1234567890"
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved match timeline
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 metadata:
+ *                   type: object
+ *                 info:
+ *                   type: object
+ *                   properties:
+ *                     frames:
+ *                       type: array
+ *                       description: Array of timeline frames
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // GET /matches/:matchId/timeline - fetch match timeline (cached)
 app.get(
   "/matches/:matchId/timeline",
@@ -728,6 +1070,40 @@ app.get(
   })
 );
 
+/**
+ * @swagger
+ * /player/{puuid}/stats:
+ *   get:
+ *     summary: Get aggregated player statistics
+ *     description: Calculates aggregated stats including win rate, average KDA, and top champions from recent matches
+ *     tags: [Player]
+ *     parameters:
+ *       - in: path
+ *         name: puuid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Player's PUUID
+ *         example: "abc123def456"
+ *       - in: query
+ *         name: numMatches
+ *         schema:
+ *           type: number
+ *           default: 20
+ *           minimum: 1
+ *           maximum: 100
+ *         description: Number of recent matches to analyze
+ *         example: 20
+ *     responses:
+ *       200:
+ *         description: Successfully calculated player statistics
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/PlayerStats'
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
 // GET /player/:puuid/stats - aggregated stats (winrate, avg KDA, favorite champions)
 app.get(
   "/player/:puuid/stats",
@@ -833,6 +1209,45 @@ app.get(
   })
 );
 
+/**
+ * @swagger
+ * /retried-match/{matchId}:
+ *   get:
+ *     summary: Get retried match data
+ *     description: Retrieves match data that was retried in the background after an initial failure
+ *     tags: [Matches]
+ *     parameters:
+ *       - in: path
+ *         name: matchId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Match ID
+ *         example: "NA1_1234567890"
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved retried match data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 match:
+ *                   $ref: '#/components/schemas/Match'
+ *       404:
+ *         description: Match not found in retry cache
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 match:
+ *                   type: null
+ *                 error:
+ *                   type: string
+ *                 code:
+ *                   type: string
+ */
 // GET /retried-match/:matchId : Get retried match data
 app.get("/retried-match/:matchId", (req, res) => {
   const match = retriedMatchesCache.get(req.params.matchId);
@@ -846,11 +1261,55 @@ app.get("/retried-match/:matchId", (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /ping:
+ *   get:
+ *     summary: Ping the server
+ *     description: Simple endpoint to check if the server is responding
+ *     tags: [Utility]
+ *     responses:
+ *       200:
+ *         description: Server is responding
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Pong!"
+ */
 // GET /ping - ping the server
 app.get("/ping", (req, res) => {
   res.json({ message: "Pong!" });
 });
 
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: Health check endpoint
+ *     description: Returns server health status, timestamp, and uptime
+ *     tags: [Utility]
+ *     responses:
+ *       200:
+ *         description: Server is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: "healthy"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 uptime:
+ *                   type: number
+ *                   description: Server uptime in seconds
+ */
 // GET /health - health check endpoint
 app.get("/health", (req, res) => {
   res.status(200).json({ 
@@ -860,6 +1319,44 @@ app.get("/health", (req, res) => {
   });
 });
 
+/**
+ * @swagger
+ * /ready:
+ *   get:
+ *     summary: Readiness check endpoint
+ *     description: Checks if the server is ready to accept traffic (verifies API key configuration)
+ *     tags: [Utility]
+ *     responses:
+ *       200:
+ *         description: Server is ready
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: "ready"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *       503:
+ *         description: Server is not ready
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: "not ready"
+ *                 reason:
+ *                   type: string
+ *                   example: "API key not configured"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ */
 // GET /ready - readiness check endpoint
 app.get("/ready", (req, res) => {
   // Check if server is ready to accept traffic
@@ -882,12 +1379,18 @@ app.get("/ready", (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err.stack);
+  console.error("Unhandled error:", err.message);
+  console.error("Error stack:", err.stack);
+  console.error("Request URL:", req.url);
+  console.error("Request method:", req.method);
+  console.error("Request body:", req.body);
+  
   // Ensure CORS headers are set even on errors
   const origin = req.headers.origin;
   if (origin && (
     ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'].includes(origin) ||
-    origin.match(/^https:\/\/.*\.onrender\.com$/)
+    origin.match(/^https:\/\/.*\.onrender\.com$/) ||
+    (process.env.NODE_ENV === 'dev' && origin.match(/^http:\/\/localhost:\d+$/))
   )) {
     res.header("Access-Control-Allow-Origin", origin);
   } else {
@@ -899,7 +1402,11 @@ app.use((err, req, res, next) => {
   if (!res.headersSent) {
     res
       .status(500)
-      .json({ error: "An unexpected error occurred.", code: "INTERNAL_ERROR" });
+      .json({ 
+        error: "An unexpected error occurred.", 
+        code: "INTERNAL_ERROR",
+        message: process.env.NODE_ENV === 'dev' ? err.message : undefined // Only show error details in dev
+      });
   }
 });
 
