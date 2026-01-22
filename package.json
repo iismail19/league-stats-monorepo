@@ -1,0 +1,24 @@
+{
+  "name": "league-stats-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "League of Legends statistics application - full stack monorepo",
+  "scripts": {
+    "dev:backend": "cd league-backend && npm run dev",
+    "dev:frontend": "cd league-stats-app && npm run dev",
+    "install:all": "cd league-backend && npm install && cd ../league-stats-app && npm install",
+    "test:backend": "cd league-backend && npm test",
+    "test:frontend": "cd league-stats-app && npm test",
+    "build:frontend": "cd league-stats-app && npm run build"
+  },
+  "keywords": [
+    "league-of-legends",
+    "riot-games",
+    "statistics",
+    "react",
+    "express"
+  ],
+  "author": "",
+  "license": "ISC"
+}
+
